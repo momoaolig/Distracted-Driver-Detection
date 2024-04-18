@@ -4,11 +4,11 @@ from tqdm import tqdm
 import numpy as np
 
 IMAGE_SIZE = (224,224)
-# num: how many images in sequence do you want to load
-def load_data(num):
+# num: how many images in each class do you want to load in sequence
+def load_data(num, path):
     images = []
     labels = []
-    dataset = './sfddd/imgs/train'
+    dataset = path
     for folder in os.listdir(dataset):
         label = folder
         subdir = f'{dataset}/{folder}'
