@@ -4,16 +4,18 @@ from keras import ops
 import numpy as np
 import matplotlib.pyplot as plt
 
+# hyperparameters
+
 num_classes = 10
 input_shape = (224, 224, 3)
 learning_rate = 0.001
 weight_decay = 0.0001
 batch_size = 256
 num_epochs = 10  # For real training, use num_epochs=100. 10 is a test value
-image_size = 72  # We'll resize input images to this size
+image_size = 224  # We'll resize input images to this size
 patch_size = 6  # Size of the patches to be extract from the input images
 num_patches = (image_size // patch_size) ** 2
-projection_dim = 64
+projection_dim = 64 # length of embedding
 num_heads = 4
 transformer_units = [
     projection_dim * 2,
@@ -116,41 +118,44 @@ def create_vit():
     model = keras.Model(inputs=inputs, outputs=logits)
     return model
 
-def run_experiment(model):
+def run_experiment(model, X_train, y_train, X_test, y_test):
     optimizer = keras.optimizers.AdamW(
         learning_rate=learning_rate, weight_decay=weight_decay
     )
 
     model.compile(
         optimizer=optimizer,
-        loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+        loss='categorical_crossentropy',
+        # loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True),
         metrics=[
-            keras.metrics.SparseCategoricalAccuracy(name="accuracy"),
-            keras.metrics.SparseTopKCategoricalAccuracy(5, name="top-5-accuracy"),
+            # keras.metrics.SparseCategoricalAccuracy(name="accuracy"),
+            # keras.metrics.SparseTopKCategoricalAccuracy(5, name="top-5-accuracy"),
+            'accuracy'
         ],
     )
 
-    checkpoint_filepath = "/tmp/checkpoint.weights.h5"
-    checkpoint_callback = keras.callbacks.ModelCheckpoint(
-        checkpoint_filepath,
-        monitor="val_accuracy",
-        save_best_only=True,
-        save_weights_only=True,
-    )
+    # checkpoint_filepath = "/tmp/checkpoint.weights.h5"
+    # checkpoint_callback = keras.callbacks.ModelCheckpoint(
+    #     checkpoint_filepath,
+    #     monitor="val_accuracy",
+    #     save_best_only=True,
+    #     save_weights_only=True,
+    # )
 
     history = model.fit(
-        x=x_train,
+        x=X_train,
         y=y_train,
         batch_size=batch_size,
         epochs=num_epochs,
         validation_split=0.1,
-        callbacks=[checkpoint_callback],
+        # callbacks=[checkpoint_callback],
     )
 
-    model.load_weights(checkpoint_filepath)
-    _, accuracy, top_5_accuracy = model.evaluate(x_test, y_test)
+    # model.load_weights(checkpoint_filepath)
+    # _, accuracy, top_5_accuracy = model.evaluate(X_test, y_test)
+    _, accuracy = model.evaluate(X_test, y_test)
     print(f"Test accuracy: {round(accuracy * 100, 2)}%")
-    print(f"Test top 5 accuracy: {round(top_5_accuracy * 100, 2)}%")
+    # print(f"Test top 5 accuracy: {round(top_5_accuracy * 100, 2)}%")
 
     return history
 
