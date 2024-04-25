@@ -74,7 +74,7 @@ def get_datasets(path, num_each_class, test_ratio, batch_size, image_resize):
 
     # Create DataLoaders if needed
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
     end = time.time()
     print(f"Time for loading data: {end - start:.2f}s")
     return train_loader, test_loader
