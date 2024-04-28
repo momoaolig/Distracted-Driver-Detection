@@ -1,39 +1,27 @@
-import os
-import cv2
 import torch
 import numpy as np
 import torch.nn as nn
 from tqdm import tqdm
 from torchvision import transforms, datasets
-from torch.utils.data import DataLoader, Subset, random_split
+from torch.utils.data import DataLoader, Subset
 import time
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+from torchvision.models import resnet50
+import timm
+from transformers import ViTModel, ViTConfig, SwinConfig, SwinModel
 
-
-IMAGE_SIZE = (224,224)
-# num: how many images in each class do you want to load in sequence
-def load_data(num, path):
-    images = []
-    labels = []
-    dataset = path
-    start = time.time()
-    for folder in os.listdir(dataset):
-        label = folder
-        subdir = f'{dataset}/{folder}'
-        for file in tqdm(os.listdir(subdir)[:num]):
-            img_path = os.path.join(subdir, file)
-            image = cv2.imread(img_path)
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            image = cv2.resize(image, IMAGE_SIZE) # to match ResNet
-            images.append(image)
-            labels.append(int(label[-1]))
-    images = np.array(images)
-    labels = np.array(labels)
-    end = time.time()
-    print(f'Time taken for data loading: {end - start}')
-    return [images, labels]
-
-def extract_samples(dataset, num_samples_per_class, seed=42):
+def load_data(num, val_ratio, test_ratio, path, batch_size, image_resize, seed=42):
     np.random.seed(seed)
+
+    start = time.time()
+    data_transforms = transforms.Compose([
+        transforms.Resize(image_resize),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+    dataset = datasets.ImageFolder(path, transform=data_transforms)
     class_indices = {}
     for idx in range(len(dataset)):
         _, label = dataset[idx]
@@ -45,39 +33,32 @@ def extract_samples(dataset, num_samples_per_class, seed=42):
     # Sampling indices for each class
     sampled_indices = []
     for label, indices in class_indices.items():
-        if len(indices) >= num_samples_per_class:
-            sampled_indices.extend(np.random.choice(indices, num_samples_per_class, replace=False))
+        if len(indices) >= num:
+            sampled_indices.extend(np.random.choice(indices, num, replace=False))
+
         else:
             print(f"Not enough samples in class {label}.")
 
+    np.random.shuffle(sampled_indices)
+    dataset_size = len(sampled_indices)
+
+    val_size = int(val_ratio * dataset_size)
+    test_size = int(test_ratio * dataset_size)
+    train_size = dataset_size - val_size - test_size
+    print(f'Train size: {train_size}, Val size: {val_size}, Test size: {test_size}')
+
     # Create a subset using sampled indices
-    subset = Subset(dataset, sampled_indices)
-    return subset
+    train_indices = sampled_indices[:train_size]
+    val_indices = sampled_indices[train_size:train_size + val_size]
+    test_indices = sampled_indices[train_size + val_size:]
 
-def get_datasets(path, num_each_class, test_ratio, batch_size, image_resize):
-    start = time.time()
-    data_transforms = transforms.Compose([
-        transforms.Resize(image_resize),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-    dataset = datasets.ImageFolder(path, transform=data_transforms)
-    # Extract samples
-    subset = extract_samples(dataset, num_each_class)
-
-    # Define the size of the test set
-    test_size = int(test_ratio * len(subset))
-    train_size = len(subset) - test_size
-
-    # Randomly split the dataset into training and test set
-    train_dataset, test_dataset = random_split(subset, [train_size, test_size], generator=torch.Generator().manual_seed(0))
-
-    # Create DataLoaders if needed
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
+    train_subset, val_subset, test_subset = Subset(dataset, train_indices), Subset(dataset, val_indices), Subset(dataset, test_indices)
+    train_loader, val_loader, test_loader = (DataLoader(train_subset, batch_size=batch_size, shuffle=True),
+                                             DataLoader(val_subset, batch_size=batch_size, shuffle=True),
+                                             DataLoader(test_subset, batch_size=batch_size, shuffle=True))
     end = time.time()
     print(f"Time for loading data: {end - start:.2f}s")
-    return train_loader, test_loader
+    return train_loader, val_loader, test_loader
 
 def calculate_accuracy(y_pred, y_true):
     _, predicted = torch.max(y_pred.data, 1)
@@ -85,8 +66,9 @@ def calculate_accuracy(y_pred, y_true):
     correct = (predicted == y_true).sum().item()
     return 100 * correct / total
 
-def model_train(model, optimizer, criterion, device, train_loader, num_epochs):
+def model_train(model, optimizer, criterion, device, train_loader, val_loader, num_epochs):
     start = time.time()
+    train_acc, train_loss = [], []
     model = model.to(device)
     # check model size
     total_params = sum(p.numel() for p in model.parameters())
@@ -115,8 +97,11 @@ def model_train(model, optimizer, criterion, device, train_loader, num_epochs):
                 loss.backward()
                 optimizer.step()
 
+                cur_acc = calculate_accuracy(outputs, labels)
+                train_acc.append(cur_acc)
+                train_loss.append(loss.item())
                 running_loss += loss.item()
-                acc += calculate_accuracy(outputs, labels)
+                acc += cur_acc
 
             except RuntimeError as exception:
               if "out of memory" in str(exception):
@@ -129,11 +114,67 @@ def model_train(model, optimizer, criterion, device, train_loader, num_epochs):
         avg_loss = running_loss / len(train_loader)
         avg_acc = acc / len(train_loader)
 
-        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}, ACC: {avg_acc:.4f}")
+        # validate
+        model.eval()
+        val_loss = 0
+        val_acc = 0
+        with torch.no_grad():
+            for images, labels in tqdm(val_loader):
+                images = images.to(device)
+                labels = labels.to(device)
+
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+
+                val_loss += loss.item()
+                val_acc += calculate_accuracy(outputs, labels)
+
+        avg_val_loss = val_loss / len(val_loader)
+        avg_val_acc = val_acc / len(val_loader)
+
+        print(f'Epoch {epoch+1}/{num_epochs}')
+        print(f"Train Loss: {avg_loss:.4f}, Train Acc: {avg_acc:.4f}")
+        print(f'Val Loss: {avg_val_loss:.4f}, Val Acc: {avg_val_acc:.2f}')
 
     end = time.time()
     print(f"Training time: {end - start:.2f}s")
     torch.cuda.empty_cache()
+    return train_acc, train_loss
+
+
+def metrics_plot(pred, true, acc, loss, interval):
+
+    # Confusion Matrix
+    cm = confusion_matrix(true, pred)
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt='d')
+    plt.xlabel('Predicted Labels')
+    plt.ylabel('True Labels')
+    plt.title('Confusion Matrix')
+    plt.show()
+
+    epoch_indices = range(0, len(acc), interval)
+    # Accuracy Plot
+    if acc:
+        plt.figure(figsize=(8, 6))
+        sampled_acc = [acc[i] for i in epoch_indices]
+        plt.plot(sampled_acc, label='Training Accuracy')
+        plt.title('Training Accuracy over Batches')
+        plt.xlabel(f'Per {interval} Batches')
+        plt.ylabel('Accuracy')
+        plt.grid(True)
+        plt.show()
+
+    # Loss Plot
+    if loss:
+        plt.figure(figsize=(8, 6))
+        sampled_loss = [loss[i] for i in epoch_indices]
+        plt.plot(sampled_loss, label='Training Loss')
+        plt.title('Training Loss over Batches')
+        plt.xlabel(f'Per {interval} Batches')
+        plt.ylabel('Loss')
+        plt.grid(True)
+        plt.show()
 
 
 def model_test(model, criterion, device, test_loader):
@@ -141,6 +182,7 @@ def model_test(model, criterion, device, test_loader):
     model.eval()
     val_running_loss = 0.0
     val_acc = 0.0
+    pred, true = [], []
 
     with torch.no_grad():
         for images, labels in tqdm(test_loader):
@@ -148,6 +190,9 @@ def model_test(model, criterion, device, test_loader):
             labels = labels.to(device)
 
             outputs = model(images)
+            _, predicted = torch.max(outputs, 1)
+            pred.extend(predicted.cpu().numpy())
+            true.extend(labels.cpu().numpy())
             loss = criterion(outputs, labels)
 
             val_running_loss += loss.item()
@@ -158,6 +203,7 @@ def model_test(model, criterion, device, test_loader):
 
     print(f'Test Loss: {avg_val_loss:.4f}, Test Acc: {avg_val_acc:.2f}')
     torch.cuda.empty_cache()
+    return pred, true
 
 class TransitionLayer(nn.Module):
     def __init__(self):
@@ -184,3 +230,30 @@ class CombinedModel(nn.Module):
         x = self.transition_layer(x)
         x = self.model_b(x)
         return x
+
+
+class ResNetViT(nn.Module):
+    def __init__(self, num_classes):
+        super(ResNetViT, self).__init__()
+        # Load a pre-trained ResNet and remove the last FC layer
+        self.resnet = resnet50(weights='DEFAULT')
+        self.resnet = nn.Sequential(*list(self.resnet.children())[:-2])
+
+        # ViT configuration - adjust parameters according to your needs
+        config = ViTConfig(image_size=7,  # Since we're using the output from ResNet
+                           patch_size=1,  # Since patches are the 1x1 output feature maps
+                           num_channels=2048,  # Number of input channels from ResNet
+                           num_hidden_layers=6,  # Number of transformer layers
+                           num_attention_heads=8,  # Number of attention heads
+                           hidden_size=512,  # Dimensionality of transformer layers
+                           num_labels=num_classes)
+        self.vit = ViTModel(config=config)
+
+        # A classifier head
+        self.classifier = nn.Linear(config.hidden_size, num_classes)
+
+    def forward(self, x):
+        x = self.resnet(x)  # Shape: [batch_size, 2048, 7, 7]
+        outputs = self.vit(x)  # Correctly pass embeddings
+        logits = self.classifier(outputs.last_hidden_state[:, 0, :])
+        return logits
