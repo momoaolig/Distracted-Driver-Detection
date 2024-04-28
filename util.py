@@ -142,39 +142,42 @@ def model_train(model, optimizer, criterion, device, train_loader, val_loader, n
     return train_acc, train_loss
 
 
-def metrics_plot(pred, true, acc, loss, interval):
+def metrics_plot(pred, true, acc, loss, interval, model_name):
+    plt.figure(figsize=(21, 6))
 
     # Confusion Matrix
+    plt.subplot(1, 3, 1)
     cm = confusion_matrix(true, pred)
-    plt.figure(figsize=(8, 6))
+
     sns.heatmap(cm, annot=True, fmt='d')
     plt.xlabel('Predicted Labels')
     plt.ylabel('True Labels')
     plt.title('Confusion Matrix')
-    plt.show()
 
     epoch_indices = range(0, len(acc), interval)
     # Accuracy Plot
-    if acc:
-        plt.figure(figsize=(8, 6))
-        sampled_acc = [acc[i] for i in epoch_indices]
-        plt.plot(sampled_acc, label='Training Accuracy')
-        plt.title('Training Accuracy over Batches')
-        plt.xlabel(f'Per {interval} Batches')
-        plt.ylabel('Accuracy')
-        plt.grid(True)
-        plt.show()
+    plt.subplot(1, 3, 2)
+
+    sampled_acc = [acc[i] for i in epoch_indices]
+    plt.plot(sampled_acc)
+    plt.title('Training Accuracy over Batches')
+    plt.xlabel(f'Per {interval} Batches')
+    plt.ylabel('Accuracy')
+    plt.grid(True)
 
     # Loss Plot
-    if loss:
-        plt.figure(figsize=(8, 6))
-        sampled_loss = [loss[i] for i in epoch_indices]
-        plt.plot(sampled_loss, label='Training Loss')
-        plt.title('Training Loss over Batches')
-        plt.xlabel(f'Per {interval} Batches')
-        plt.ylabel('Loss')
-        plt.grid(True)
-        plt.show()
+    plt.subplot(1, 3, 3)
+
+    sampled_loss = [loss[i] for i in epoch_indices]
+    plt.plot(sampled_loss)
+    plt.title('Training Loss over Batches')
+    plt.xlabel(f'Per {interval} Batches')
+    plt.ylabel('Loss')
+    plt.grid(True)
+
+    plt.suptitle(model_name, fontsize=16)  # Adjust the font size and position as needed
+    plt.tight_layout()  # Adjust layout to prevent overlap
+    plt.show()
 
 
 def model_test(model, criterion, device, test_loader):
