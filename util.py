@@ -9,8 +9,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import confusion_matrix
 from torchvision.models import resnet50
-import timm
-from transformers import ViTModel, ViTConfig, SwinConfig, SwinModel
+from sklearn.metrics import precision_score, recall_score
+from transformers import ViTModel, ViTConfig
+import os
+from hyperparameters import save_path
+# import bestPerformance
 
 def load_data(num, val_ratio, test_ratio, path, batch_size, image_resize, seed=42):
     np.random.seed(seed)
@@ -66,80 +69,111 @@ def calculate_accuracy(y_pred, y_true):
     correct = (predicted == y_true).sum().item()
     return 100 * correct / total
 
-def model_train(model, optimizer, criterion, device, train_loader, val_loader, num_epochs):
-    start = time.time()
-    train_acc, train_loss = [], []
-    model = model.to(device)
-    # check model size
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Total parameters: {total_params}")
-    print(f"Trainable parameters: {trainable_params}")
+def model_train(model, optimizer, criterion, device, train_loader, val_loader, num_epochs, name, load=False):
+    path = os.path.join(save_path, name + '.pth')
+    if load:
+        try:
+            model.load_state_dict(torch.load(path))
+            # return bestPerformance.name
+        except:
+            print('No such model')
+    else:
+        start = time.time()
 
-    for epoch in range(num_epochs):
-        model.train()
-        running_loss = 0.0
-        acc = 0.0
+        # best_acc = bestPerformance.name if bestPerformance.name else 0.0
+        train_acc, train_loss = [], []
+        model = model.to(device)
+        # check model size
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Total parameters: {total_params}")
+        print(f"Trainable parameters: {trainable_params}")
 
-        for images, labels in tqdm(train_loader):
-            # Move inputs and labels to GPU if available
-            images, labels = images.to(device), labels.to(device)
+        for epoch in range(num_epochs):
+            model.train()
+            running_loss = 0.0
+            acc = 0.0
 
-            # Zero the parameter gradients
-            optimizer.zero_grad()
+            for images, labels in tqdm(train_loader):
+                # Move inputs and labels to GPU if available
+                images, labels = images.to(device), labels.to(device)
 
-            # Forward pass
-            try:
-                outputs = model(images)
-                loss = criterion(outputs, labels)
+                # Zero the parameter gradients
+                optimizer.zero_grad()
 
-                # Backward pass and optimize
-                loss.backward()
-                optimizer.step()
+                # Forward pass
+                try:
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
 
-                cur_acc = calculate_accuracy(outputs, labels)
-                train_acc.append(cur_acc)
-                train_loss.append(loss.item())
-                running_loss += loss.item()
-                acc += cur_acc
+                    # Backward pass and optimize
+                    loss.backward()
+                    optimizer.step()
 
-            except RuntimeError as exception:
-              if "out of memory" in str(exception):
-                  print('WARNING: out of memory, will pass this')
-                  torch.cuda.empty_cache()
-                  continue
-              else:
-                  raise exception
-        # Calculate average loss and accuracy over an epoch
-        avg_loss = running_loss / len(train_loader)
-        avg_acc = acc / len(train_loader)
+                    cur_acc = calculate_accuracy(outputs, labels)
+                    train_acc.append(cur_acc)
+                    train_loss.append(loss.item())
+                    running_loss += loss.item()
+                    acc += cur_acc
 
-        # validate
-        model.eval()
-        val_loss = 0
-        val_acc = 0
-        with torch.no_grad():
-            for images, labels in tqdm(val_loader):
-                images = images.to(device)
-                labels = labels.to(device)
+                except RuntimeError as exception:
+                  if "out of memory" in str(exception):
+                      print('WARNING: out of memory, will pass this')
+                      torch.cuda.empty_cache()
+                      continue
+                  else:
+                      raise exception
+            # Calculate average loss and accuracy over an epoch
+            avg_loss = running_loss / len(train_loader)
+            avg_acc = acc / len(train_loader)
 
-                outputs = model(images)
-                loss = criterion(outputs, labels)
+            # validate
+            model.eval()
+            val_loss = 0
+            val_acc = 0
+            with torch.no_grad():
+                for images, labels in tqdm(val_loader):
+                    images = images.to(device)
+                    labels = labels.to(device)
 
-                val_loss += loss.item()
-                val_acc += calculate_accuracy(outputs, labels)
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
 
-        avg_val_loss = val_loss / len(val_loader)
-        avg_val_acc = val_acc / len(val_loader)
+                    val_loss += loss.item()
+                    val_acc += calculate_accuracy(outputs, labels)
 
-        print(f'Epoch {epoch+1}/{num_epochs}')
-        print(f"Train Loss: {avg_loss:.4f}, Train Acc: {avg_acc:.4f}")
-        print(f'Val Loss: {avg_val_loss:.4f}, Val Acc: {avg_val_acc:.2f}')
+            avg_val_loss = val_loss / len(val_loader)
+            avg_val_acc = val_acc / len(val_loader)
 
-    end = time.time()
-    print(f"Training time: {end - start:.2f}s")
-    torch.cuda.empty_cache()
-    return train_acc, train_loss
+            print(f'Epoch {epoch+1}/{num_epochs}')
+            print(f"Train Loss: {avg_loss:.4f}, Train Acc: {avg_acc:.4f}")
+            print(f'Val Loss: {avg_val_loss:.4f}, Val Acc: {avg_val_acc:.2f}')
+
+        # if avg_acc > best_acc:
+        #     torch.save(model.state_dict(), path)
+        #     print(f'New best model saved with accuracy: {avg_acc}%')
+        #
+        #     # Write the best accuracy to a file
+        #     with open('bestPerformance.py', 'r') as file:
+        #         lines = file.readlines()
+        #     for line in lines:
+        #         # Replace the name identifier if it's in the line
+        #         if f"{name}_" in line:
+        #             updated_line = line.replace(f"{name}_", f"{new_name}_")
+        #             updated_lines.append(updated_line)
+        #         else:
+        #             updated_lines.append(line)
+        #
+        #
+        #
+        #         file.write(f'{name} = {avg_acc}\n')
+        #         file.write(f'{name}_acc = {train_acc}\n')
+        #         file.write(f'{name}_loss = {train_loss}\n')
+
+        end = time.time()
+        print(f"Training time: {end - start:.2f}s")
+        torch.cuda.empty_cache()
+        return train_acc, train_loss
 
 
 def metrics_plot(pred, true, acc, loss, interval, model_name):
@@ -182,6 +216,7 @@ def metrics_plot(pred, true, acc, loss, interval, model_name):
 
 def model_test(model, criterion, device, test_loader):
     # test
+    model = model.to(device)
     model.eval()
     val_running_loss = 0.0
     val_acc = 0.0
@@ -203,7 +238,13 @@ def model_test(model, criterion, device, test_loader):
 
     avg_val_loss = val_running_loss / len(test_loader)
     avg_val_acc = val_acc / len(test_loader)
+    pred_np = np.array(pred)
+    true_np = np.array(true)
 
+    precision = precision_score(true_np, pred_np, average='macro')
+    recall = recall_score(true_np, pred_np, average='macro')
+
+    print(f"Precision: {precision:.4f}, Recall: {recall:.4f}")
     print(f'Test Loss: {avg_val_loss:.4f}, Test Acc: {avg_val_acc:.2f}')
     torch.cuda.empty_cache()
     return pred, true
